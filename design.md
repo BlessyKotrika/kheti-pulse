@@ -23,17 +23,21 @@ Kheti Pulse is a mobile-first AI copilot for rural farmers, providing weather ri
 
 | Layer | Technology | Rationale |
 |-------|-----------|-----------|
-| **Frontend** | Flutter | Cross-platform (Android focus), rich UI, good offline support |
-| **Backend** | FastAPI (Python) | Fast development, async support, excellent for ML integration |
-| **LLM** | Amazon Bedrock (Claude 3 Haiku) | Cost-effective, strong multilingual, fast responses, enterprise-grade |
-| **Embeddings** | Amazon Bedrock (Titan Embeddings) | Multilingual support, consistent with LLM provider |
-| **RAG Framework** | LlamaIndex | Simpler than LangChain, good FAISS integration, clear abstractions |
-| **Vector Store** | FAISS (local) | No external dependencies, fast, sufficient for <1000 documents |
-| **Translation** | Google Translate API | Reliable fallback; IndicTrans2 for production |
+| **Frontend** | Flutter (Mobile/Web) | Cross-platform (Android focus), rich UI, good offline support |
+| **API Gateway** | Amazon API Gateway | Managed, scalable, integrates with Lambda |
+| **Compute** | AWS Lambda / ECS | Serverless for API logic, auto-scaling |
+| **Database** | Amazon DynamoDB | NoSQL, serverless, fast for user profiles/history |
+| **Storage** | Amazon S3 | Object storage for cached datasets, documents |
+| **LLM** | Amazon Bedrock (Claude 3 Haiku) | Cost-effective, strong multilingual, fast responses |
+| **RAG** | Amazon Bedrock Knowledge Bases | Managed RAG with built-in vector store (OpenSearch Serverless) |
+| **Embeddings** | Amazon Bedrock (Titan Embeddings) | Integrated with Knowledge Bases |
+| **Guardrails** | Amazon Bedrock Guardrails | Built-in content filtering, refusal policies |
+| **Translation** | Amazon Translate | Native AWS service, multilingual support |
+| **Voice STT/TTS** | Amazon Transcribe / Amazon Polly | Native AWS services for speech |
 | **Weather API** | OpenWeatherMap | Free tier, reliable, 5-day forecast |
-| **Mandi Data** | AGMARKNET CSV | Public data, cached locally, daily refresh |
-| **Voice STT** | Android Speech Recognition | Native, no API costs, works offline |
-| **Deployment** | Railway/Render (backend), APK (mobile) | Free tiers, simple deployment |
+| **Mandi Data** | AGMARKNET CSV | Public data, cached in S3, daily refresh |
+| **Scheduler** | Amazon EventBridge | Cron jobs for data ingestion |
+| **Deployment** | AWS (Lambda/ECS), APK (mobile) | Fully managed AWS infrastructure |
 
 ---
 
@@ -41,48 +45,85 @@ Kheti Pulse is a mobile-first AI copilot for rural farmers, providing weather ri
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        MOBILE APP (Flutter)                      │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐ │
-│  │   Home       │  │  Sell Smart  │  │   Ask Assistant        │ │
-│  │  Dashboard   │  │  (Prices)    │  │   (RAG Chat)           │ │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬─────────────────┘ │
-│         │                 │                  │                    │
-│         └─────────────────┴──────────────────┘                    │
-│                           │                                       │
-│                    ┌──────▼──────┐                                │
-│                    │  API Client │                                │
-│                    │  (HTTP/REST)│                                │
-│                    └──────┬──────┘                                │
-└───────────────────────────┼────────────────────────────────────────┘
-                            │ HTTPS
-                            │
-┌───────────────────────────▼────────────────────────────────────────┐
-│                    BACKEND (FastAPI)                               │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐  │
-│  │  Weather     │  │  Mandi Price │  │   RAG Assistant        │  │
-│  │  Service     │  │  Service     │  │   Service              │  │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬─────────────────┘  │
-│         │                 │                  │                     │
-│         │                 │          ┌───────▼────────┐            │
-│         │                 │          │  LlamaIndex    │            │
-│         │                 │          │  Query Engine  │            │
-│         │                 │          └───────┬────────┘            │
-│         │                 │                  │                     │
-└─────────┼─────────────────┼──────────────────┼─────────────────────┘
-          │                 │                  │
-          │                 │          ┌───────▼────────┐
-          │                 │          │  FAISS Vector  │
-          │                 │          │  Store (local) │
-          │                 │          └────────────────┘
-          │                 │                  │
-  ┌───────▼────────┐ ┌──────▼──────┐  ┌───────▼────────┐
-  │ OpenWeatherMap │ │  AGMARKNET  │  │ Amazon Bedrock │
-  │      API       │ │  CSV Cache  │  │ (Claude/Titan) │
-  └────────────────┘ └─────────────┘  └────────────────┘
-
-External Services:
-  - Amazon Bedrock API (Claude 3 Haiku LLM + Titan Embeddings)
-  - Google Translate API (fallback translation)
+│              CLIENT / EXPERIENCE LAYER                          │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Mobile App / Web App (Flutter)                          │  │
+│  │  • Today Cards  • Ask KhetiPulse  • Sell Smart          │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Multilingual + Voice (optional)                         │  │
+│  │  • Amazon Translate (text)                               │  │
+│  │  • Amazon Transcribe (STT) • Amazon Polly (TTS)         │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  User Context                                            │  │
+│  │  • Language • Location • Crop • Sowing date             │  │
+│  │  • Saved advisories / preferences                        │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└────────────────────────────┬────────────────────────────────────┘
+                             │ HTTPS
+                             │
+┌────────────────────────────▼────────────────────────────────────┐
+│              AWS BACKEND + DATA LAYER                           │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  API Layer                                               │  │
+│  │  Amazon API Gateway → AWS Lambda / ECS                   │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Operational Data Store                                  │  │
+│  │  • Amazon DynamoDB (profiles, crops, history)           │  │
+│  │  • Amazon S3 (cached datasets, documents)               │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  External Data Ingestion + Caching                       │  │
+│  │  • Weather API (forecast, alerts)                        │  │
+│  │  • AGMARKNET (mandi prices) → periodic cache to S3      │  │
+│  │  • Govt advisories/schemes → curated docs store         │  │
+│  │  • Scheduler: EventBridge / cron                         │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Recommendation Logic (Deterministic)                    │  │
+│  │  • Spray window rules (wind/rain thresholds)            │  │
+│  │  • Best mandi = price – distance proxy                  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             │
+┌────────────────────────────▼────────────────────────────────────┐
+│              AI LAYER ON AMAZON BEDROCK                         │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Amazon Bedrock (LLM - Claude 3 Haiku)                   │  │
+│  │  • Generate: action checklist + Do/Don't cards          │  │
+│  │  • Structured output for Cards + Chat                   │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Bedrock Knowledge Bases (RAG)                           │  │
+│  │  • Retrieve from curated docs + cached datasets         │  │
+│  │  • Embeddings + Vector store (OpenSearch Serverless)    │  │
+│  │  • Return citations/snippets for "proof"                │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Bedrock Guardrails + Safety                             │  │
+│  │  • Refuse unsafe requests (e.g., pesticide dosage)      │  │
+│  │  • Policy checks + "I don't know" fallback              │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Confidence + Explainability                             │  │
+│  │  • Confidence score (retrieval strength)                │  │
+│  │  • Show sources/citations in UI                         │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 
@@ -95,7 +136,7 @@ External Services:
 **Responsibilities:**
 - User interface and interaction
 - Local caching (SharedPreferences, SQLite)
-- Voice input capture (Android Speech Recognition)
+- Voice input/output via AWS services (Transcribe/Polly)
 - Language preference management
 - Offline-first data display
 
@@ -115,55 +156,494 @@ External Services:
 
 ---
 
-### 2. Backend API (FastAPI)
+### 2. API Layer (AWS Lambda / ECS)
 
 **Responsibilities:**
-- Orchestrate external API calls (weather, LLM)
-- Serve mandi price data from local cache
-- Handle RAG query pipeline (retrieval + generation)
-- Apply responsible AI guardrails
-- Log requests for analytics
+- Handle HTTP requests via API Gateway
+- Orchestrate calls to data stores, external APIs, and Bedrock
+- Apply business logic and validation
+- Return structured JSON responses
 
-**Endpoints:** (See APIs section below)
+**Compute Options:**
+- **AWS Lambda:** Serverless, auto-scaling, pay-per-request (preferred for MVP)
+- **ECS/Fargate:** Container-based, for more complex workloads (future)
 
-**Why FastAPI:**
-- Async/await for concurrent API calls
-- Auto-generated OpenAPI docs
-- Easy integration with Python ML libraries
-- Fast enough for demo scale (100 concurrent users)
-
+**Why Lambda:**
+- No server management
+- Auto-scales with demand
+- Cost-effective for demo (free tier: 1M requests/month)
+- Easy integration with API Gateway and other AWS services
 
 ---
 
-### 3. Weather Service
+### 3. Operational Data Store
 
-**Responsibilities:**
-- Fetch 5-day forecast from OpenWeatherMap
-- Generate risk alerts based on thresholds
-- Create action cards (do/don't) based on weather + crop stage
+**Amazon DynamoDB:**
+- User profiles (language, location, crop preferences)
+- Query history (for analytics)
+- Saved advisories and recommendations
+- Crop calendar data (sowing dates, stages)
 
-**Data Flow:**
-1. Receive location (lat/lon or district name)
-2. Call OpenWeatherMap API (cached for 6 hours)
-3. Parse forecast: temp, precipitation, wind, humidity
-4. Apply risk rules (see Weather Risk Logic section)
-5. Return structured response with alerts + action cards
+**Amazon S3:**
+- Cached weather data (JSON files)
+- Mandi price datasets (CSV files from AGMARKNET)
+- Curated agricultural documents (PDFs for Knowledge Base)
+- Static assets (images, icons)
 
-**Caching Strategy:** Redis or in-memory cache (6-hour TTL)
+**Why DynamoDB:**
+- Serverless, no capacity planning
+- Fast key-value lookups
+- Pay-per-request pricing
+- Good for user profiles and history
+
+**Why S3:**
+- Cheap object storage
+- Integrates with Bedrock Knowledge Bases
+- Versioning and lifecycle policies
+- Easy to cache external data
 
 ---
 
-### 4. Mandi Price Service
+### 4. External Data Ingestion + Caching
 
 **Responsibilities:**
-- Serve current and historical mandi prices
-- Calculate price trends (7-day moving average)
-- Recommend best mandi based on net estimate
-- Handle missing data gracefully
+- Fetch weather forecasts from OpenWeatherMap
+- Download mandi prices from AGMARKNET API
+- Curate government advisories and schemes
+- Schedule periodic updates
 
-**Data Source:** AGMARKNET CSV downloaded daily, stored in SQLite
+**Scheduler:** Amazon EventBridge (cron expressions)
 
 **Data Flow:**
+1. EventBridge triggers Lambda function (daily at 11 AM IST)
+2. Lambda fetches data from external APIs
+3. Parse and validate data
+4. Store in S3 (weather, mandi prices) and DynamoDB (metadata)
+5. Update Bedrock Knowledge Base (if new documents added)
+
+**Why EventBridge:**
+- Managed cron service
+- Reliable scheduling
+- Easy Lambda integration
+
+---
+
+### 5. Recommendation Logic (Deterministic)
+
+**Responsibilities:**
+- Apply rule-based logic for weather-based recommendations
+- Calculate best mandi based on price and distance
+- Generate action cards (do/don't) based on thresholds
+
+**Implementation:** Python functions in Lambda
+
+**Why Deterministic:**
+- Transparent and explainable
+- No ML training needed
+- Fast and reliable
+- Easy to debug and adjust rules
+
+---
+
+### 6. Amazon Bedrock (LLM)
+
+**Model:** Claude 3 Haiku
+
+**Responsibilities:**
+- Generate natural language responses for chat
+- Create structured action checklists
+- Format do/don't cards from weather data
+- Respond in Hindi/Marathi based on user preference
+
+**Why Claude 3 Haiku:**
+- Fast inference (low latency)
+- Cost-effective ($0.25 per 1M input tokens)
+- Strong multilingual support
+- Good at structured output (JSON mode)
+
+---
+
+### 7. Bedrock Knowledge Bases (RAG)
+
+**Responsibilities:**
+- Store and index agricultural documents
+- Perform semantic search on user queries
+- Return relevant document chunks with citations
+- Provide context to LLM for grounded responses
+
+**Components:**
+- **Data Source:** S3 bucket with curated PDFs/documents
+- **Embeddings:** Amazon Titan Embeddings (automatic)
+- **Vector Store:** Amazon OpenSearch Serverless (managed)
+- **Retrieval:** Top-k semantic search
+
+**Why Bedrock Knowledge Bases:**
+- Fully managed RAG solution
+- No need to manage FAISS or vector DB
+- Automatic chunking and embedding
+- Built-in citation extraction
+- Integrates seamlessly with Bedrock LLM
+
+---
+
+### 8. Bedrock Guardrails + Safety
+
+**Responsibilities:**
+- Filter harmful or unsafe requests
+- Refuse medical, legal, financial advice
+- Apply content policies (no hate speech, violence)
+- Implement "I don't know" fallback for low confidence
+
+**Configuration:**
+- Define denied topics (medical dosage, legal advice)
+- Set content filters (hate, violence, sexual)
+- Configure PII redaction (if needed)
+
+**Why Bedrock Guardrails:**
+- Built-in safety layer
+- No custom code needed
+- Configurable policies
+- Audit logs for compliance
+
+---
+
+### 9. Confidence + Explainability
+
+**Responsibilities:**
+- Calculate confidence score based on retrieval quality
+- Display citations and sources in UI
+- Provide explanations for recommendations
+- Show "why" tooltips for action cards
+
+**Implementation:**
+- Bedrock Knowledge Bases returns relevance scores
+- Lambda checks score threshold (>0.6 = high confidence)
+- Include citations in API response
+- Frontend displays sources prominently
+
+---
+
+## Data Flow
+
+### Flow 1: Home Dashboard Load
+
+```
+User opens app
+    │
+    ▼
+[Mobile] Check cache (last updated < 6 hours?)
+    │
+    ├─ Yes: Display cached data
+    │
+    └─ No: Call API Gateway → /dashboard
+            │
+            ▼
+        [Lambda] Fetch weather from S3 cache (or OpenWeatherMap)
+            │
+            ▼
+        [Lambda] Apply deterministic risk rules
+            │
+            ▼
+        [Lambda] Call Bedrock LLM to generate action cards
+            │       Prompt: "Given weather: {data}, generate do/don't cards"
+            │
+            ▼
+        [Lambda] Return JSON response
+            │
+            ▼
+        [Mobile] Cache response + display
+```
+
+---
+
+### Flow 2: Sell Smart - Best Mandi Recommendation
+
+```
+User selects crop (Cotton) + quantity (10 quintals)
+    │
+    ▼
+[Mobile] Call API Gateway → /mandi/recommend
+    │
+    ▼
+[Lambda] Query DynamoDB for today's prices (all mandis)
+    │    (or read from S3 cache if DynamoDB not used)
+    │
+    ▼
+[Lambda] For each mandi:
+    │       - Get price (modal)
+    │       - Calculate distance from user location
+    │       - Compute transport cost = distance × ₹10 × (quantity/100)
+    │       - Compute net estimate = (price × quantity) - transport_cost
+    │
+    ▼
+[Lambda] Rank mandis by net estimate (descending)
+    │
+    ▼
+[Lambda] Select top mandi + generate explanation
+    │       "Akola Mandi offers ₹6,200/quintal. After transport (₹500),
+    │        your net return is ₹61,500 - highest among nearby mandis."
+    │
+    ▼
+[Lambda] Return JSON with ranked list + recommendation
+    │
+    ▼
+[Mobile] Display list + highlight best mandi
+```
+
+---
+
+### Flow 3: Ask Assistant (RAG Query with Bedrock Knowledge Bases)
+
+```
+User types/speaks: "कपास में सफेद मक्खी का उपचार क्या है?"
+                   (What is the treatment for whitefly in cotton?)
+    │
+    ▼
+[Mobile] Capture voice → Amazon Transcribe → text (optional)
+    │
+    ▼
+[Mobile] Call API Gateway → /assistant/query
+    │       Body: {"query": "कपास में सफेद मक्खी...", "language": "hi"}
+    │
+    ▼
+[Lambda] Detect language (already provided: Hindi)
+    │
+    ▼
+[Lambda] Optional: Translate query to English via Amazon Translate
+    │       (for better retrieval if needed)
+    │
+    ▼
+[Lambda] Call Bedrock Knowledge Bases RetrieveAndGenerate API
+    │       - Knowledge Base ID: kb-xxxxx
+    │       - Query: user question
+    │       - Model: Claude 3 Haiku
+    │       - Language: Hindi
+    │
+    ▼
+[Bedrock KB] Automatic workflow:
+    │       1. Generate embedding (Titan Embeddings)
+    │       2. Search OpenSearch vector store (top-k=3)
+    │       3. Retrieve document chunks with citations
+    │       4. Build prompt with context
+    │       5. Call Claude 3 Haiku LLM
+    │       6. Apply Guardrails (safety checks)
+    │       7. Return answer + citations + confidence
+    │
+    ▼
+[Lambda] Parse Bedrock response
+    │       Answer: "सफेद मक्खी के नियंत्रण के लिए..."
+    │       Citations: [{source: "IPM_Cotton.pdf", page: 42}]
+    │       Confidence: 0.89 (high)
+    │
+    ▼
+[Lambda] Check confidence threshold
+    │       If < 0.6: Return refusal message
+    │       If >= 0.6: Return answer with citations
+    │
+    ▼
+[Lambda] Return JSON response
+    │
+    ▼
+[Mobile] Display answer + citations
+    │       Optional: Amazon Polly TTS for voice output
+```
+
+---
+
+## RAG Design
+
+### Knowledge Base
+
+**Content Sources:**
+- ICAR agricultural extension documents (public PDFs)
+- Maharashtra Agriculture Department FAQs
+- Krishi Vigyan Kendra (KVK) training materials
+- Synthetic documents for demo (if public sources insufficient)
+
+**Coverage:**
+- Cotton cultivation (varieties, sowing, spacing, irrigation)
+- Soybean crop management (fertilizer, pest control)
+- Integrated Pest Management (IPM) for bollworm, whitefly, pod borer
+- Soil health for black cotton soil (Vidarbha)
+- Water conservation (drip irrigation, mulching)
+- Post-harvest handling
+
+**Document Count:** 30-50 curated documents (~10-15 MB total)
+
+**Format:** PDF, TXT, Markdown
+
+**Storage:** Amazon S3 bucket (configured as Bedrock Knowledge Base data source)
+
+---
+
+### Chunking Strategy
+
+**Approach:** Automatic chunking by Bedrock Knowledge Bases
+
+**Parameters (configurable):**
+- **Chunk Size:** Default (300 tokens) or custom (512 tokens)
+- **Overlap:** Default (20%) or custom (50 tokens)
+- **Splitting Logic:** Semantic boundaries (paragraphs, sections)
+
+**Why Automatic:**
+- No manual chunking code needed
+- Bedrock optimizes for retrieval quality
+- Consistent with embedding model
+
+---
+
+### Embeddings
+
+**Model:** Amazon Titan Embeddings G1 - Text (`amazon.titan-embed-text-v1`)
+
+**Why Titan Embeddings:**
+- Fully managed by Bedrock Knowledge Bases
+- Multilingual support (100+ languages including Hindi, Marathi)
+- Cost-effective ($0.0001 per 1K tokens)
+- Optimized for semantic search
+- No manual embedding generation needed
+
+**Dimension:** 1536
+
+**Embedding Process:**
+- Automatic: Bedrock Knowledge Bases handles embedding generation
+- Documents uploaded to S3 → Bedrock syncs → generates embeddings → stores in OpenSearch
+
+---
+
+### Retrieval
+
+**Vector Store:** Amazon OpenSearch Serverless (managed by Bedrock)
+
+**Retrieval Parameters:**
+- **Top-k:** 3-5 documents (configurable)
+- **Similarity Metric:** Cosine similarity
+- **Threshold:** Minimum relevance score 0.6
+
+**Query Process:**
+1. User query → Bedrock Knowledge Bases API
+2. Automatic embedding generation (Titan)
+3. OpenSearch vector search → top-k chunks
+4. Return chunks with metadata (source, page, score)
+
+**Why Bedrock Knowledge Bases:**
+- Fully managed (no OpenSearch cluster management)
+- Automatic sync from S3
+- Built-in citation extraction
+- Integrated with Bedrock LLM
+- No infrastructure management
+
+---
+
+### Citations
+
+**Approach:** Automatic citation extraction by Bedrock Knowledge Bases
+
+**Citation Format:**
+```json
+{
+  "retrievedReferences": [
+    {
+      "content": { "text": "..." },
+      "location": {
+        "type": "S3",
+        "s3Location": { "uri": "s3://bucket/IPM_Cotton.pdf" }
+      },
+      "metadata": { "page": "42", "section": "4.2" }
+    }
+  ]
+}
+```
+
+**Display Format:**
+```
+"Source: IPM Cotton Guide, Page 42, Section 4.2"
+```
+
+**Implementation:**
+- Bedrock returns citations automatically
+- Lambda parses and formats for mobile app
+- Frontend displays citations below answer
+
+---
+
+## Multilingual Design
+
+### Translation Strategy
+
+**Primary Languages:** Marathi (mr), Hindi (hi)
+
+**Fallback:** English (en)
+
+**Translation Points:**
+1. **UI Strings:** Hardcoded translations (JSON files in Flutter)
+2. **User Queries:** Optional translation to English for better retrieval
+3. **LLM Responses:** Generate directly in target language (Claude supports Hindi/Marathi)
+4. **Knowledge Base:** Store in English, retrieve and generate in user language
+
+**Translation Service:** Amazon Translate
+
+**Why Amazon Translate:**
+- Native AWS service (easy integration)
+- Supports 75+ languages including Hindi, Marathi
+- Pay-per-character pricing ($15 per 1M characters)
+- Real-time translation API
+- Good quality for Indic languages
+
+**LLM Multilingual Support:**
+- Claude 3 Haiku supports Hindi and Marathi natively
+- Generate responses directly in target language
+- Better quality than translate-after-generation
+- Prompt: "Answer in Hindi: {query}"
+
+---
+
+### Voice Input (STT)
+
+**Technology:** Amazon Transcribe
+
+**Languages:** Hindi, Marathi, English
+
+**Why Amazon Transcribe:**
+- Native AWS service
+- Good accuracy for Indic languages
+- Real-time streaming or batch processing
+- Pay-per-second pricing ($0.024 per minute)
+- Easy integration with Lambda
+
+**Flow:**
+1. User taps microphone icon in mobile app
+2. Record audio (Flutter audio recorder)
+3. Upload audio to S3 or stream to Transcribe
+4. Transcribe converts to text (Hindi/Marathi)
+5. Display text in chat input
+6. User confirms/edits → send query
+
+**Alternative:** Android native Speech Recognition (offline, free) for MVP
+
+---
+
+### Voice Output (TTS) - Optional
+
+**Technology:** Amazon Polly
+
+**Languages:** Hindi (Aditi voice), English (Indian accent)
+
+**Note:** Marathi not directly supported; use Hindi voice or skip TTS for Marathi
+
+**Flow:**
+1. LLM response received
+2. User taps "Listen" button
+3. Lambda calls Polly API
+4. Polly generates audio (MP3)
+5. Stream audio to mobile app
+6. Play audio
+
+**Priority:** P2 (nice-to-have, not critical for demo)
+
+**Cost:** $4 per 1M characters
+
+**
 1. Receive crop type, quantity, user location
 2. Query SQLite for prices (today + last 7 days)
 3. Calculate transport cost (distance × ₹10/km × quantity/100)
