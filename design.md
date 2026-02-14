@@ -25,7 +25,8 @@ Kheti Pulse is a mobile-first AI copilot for rural farmers, providing weather ri
 |-------|-----------|-----------|
 | **Frontend** | Flutter | Cross-platform (Android focus), rich UI, good offline support |
 | **Backend** | FastAPI (Python) | Fast development, async support, excellent for ML integration |
-| **LLM** | Google Gemini 1.5 Flash | Free tier, strong multilingual (Hindi/Marathi), fast responses |
+| **LLM** | Amazon Bedrock (Claude 3 Haiku) | Cost-effective, strong multilingual, fast responses, enterprise-grade |
+| **Embeddings** | Amazon Bedrock (Titan Embeddings) | Multilingual support, consistent with LLM provider |
 | **RAG Framework** | LlamaIndex | Simpler than LangChain, good FAISS integration, clear abstractions |
 | **Vector Store** | FAISS (local) | No external dependencies, fast, sufficient for <1000 documents |
 | **Translation** | Google Translate API | Reliable fallback; IndicTrans2 for production |
@@ -73,14 +74,14 @@ Kheti Pulse is a mobile-first AI copilot for rural farmers, providing weather ri
           │                 │          │  FAISS Vector  │
           │                 │          │  Store (local) │
           │                 │          └────────────────┘
-          │                 │
-  ┌───────▼────────┐ ┌──────▼──────┐
-  │ OpenWeatherMap │ │  AGMARKNET  │
-  │      API       │ │  CSV Cache  │
-  └────────────────┘ └─────────────┘
+          │                 │                  │
+  ┌───────▼────────┐ ┌──────▼──────┐  ┌───────▼────────┐
+  │ OpenWeatherMap │ │  AGMARKNET  │  │ Amazon Bedrock │
+  │      API       │ │  CSV Cache  │  │ (Claude/Titan) │
+  └────────────────┘ └─────────────┘  └────────────────┘
 
 External Services:
-  - Google Gemini API (LLM)
+  - Amazon Bedrock API (Claude 3 Haiku LLM + Titan Embeddings)
   - Google Translate API (fallback translation)
 ```
 
@@ -186,7 +187,7 @@ External Services:
 **Components:**
 - **Query Preprocessor:** Language detection, query cleaning
 - **Retriever:** FAISS semantic search (top-k=3)
-- **Generator:** Gemini API with prompt template
+- **Generator:** Amazon Bedrock (Claude 3 Haiku) with prompt template
 - **Citation Extractor:** Parse source metadata from retrieved docs
 - **Guardrail Filter:** Check for refusal conditions
 
@@ -195,6 +196,7 @@ External Services:
 - Built-in FAISS integration
 - Easy prompt customization
 - Good documentation
+- Supports Amazon Bedrock out of the box
 
 ---
 
@@ -284,7 +286,7 @@ User types/speaks: "कपास में सफेद मक्खी का �
     │       → "What is the treatment for whitefly in cotton?"
     │
     ▼
-[Backend] Generate embedding (Gemini embedding model)
+[Backend] Generate embedding (Amazon Titan Embeddings)
     │
     ▼
 [Backend] FAISS similarity search (top-k=3 documents)
@@ -303,7 +305,7 @@ User types/speaks: "कपास में सफेद मक्खी का �
     │       Instructions: Answer in Hindi, cite sources, be concise
     │
     ▼
-[Backend] Call Gemini API
+[Backend] Call Amazon Bedrock (Claude 3 Haiku)
     │
     ▼
 [Backend] Parse response + extract citations
@@ -365,22 +367,23 @@ User types/speaks: "कपास में सफेद मक्खी का �
 
 ### Embeddings
 
-**Model:** Google Gemini Embedding Model (`text-embedding-004`)
+**Model:** Amazon Bedrock Titan Embeddings (`amazon.titan-embed-text-v1`)
 
-**Why Gemini Embeddings:**
-- Multilingual support (Hindi, Marathi, English)
-- Free tier available
+**Why Titan Embeddings:**
+- Multilingual support (100+ languages including Hindi, Marathi)
+- Cost-effective ($0.0001 per 1K tokens)
 - Consistent with LLM choice (same provider)
 - Good performance on semantic similarity tasks
+- Enterprise-grade reliability
 
-**Dimension:** 768 (standard for Gemini embeddings)
+**Dimension:** 1536 (standard for Titan Embeddings)
 
 **Embedding Process:**
 1. Translate non-English chunks to English (for better embedding quality)
-2. Generate embedding via Gemini API
+2. Generate embedding via Bedrock API
 3. Store in FAISS index with metadata (source doc, page, language)
 
-**Fallback:** If Gemini unavailable, use `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (local)
+**Fallback:** If Bedrock unavailable, use `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (local)
 
 ---
 
@@ -397,7 +400,7 @@ User types/speaks: "कपास में सफेद मक्खी का �
 
 **Query Process:**
 1. User query → Translate to English (if needed)
-2. Generate query embedding (Gemini)
+2. Generate query embedding (Amazon Titan Embeddings)
 3. FAISS similarity search → top-3 chunks
 4. Return chunks with metadata (source, score)
 
@@ -454,6 +457,11 @@ Example: "Source: IPM Cotton Guide, Section 4.2"
 - Free tier sufficient for demo
 - Easy integration
 - IndicTrans2 requires model hosting (adds complexity)
+
+**LLM Multilingual Support:**
+- Amazon Bedrock Claude 3 Haiku supports Hindi and Marathi natively
+- Generate responses directly in target language without translation
+- Better quality than translate-after-generation approach
 
 
 ---
@@ -1187,7 +1195,11 @@ flutter run
 
 **Environment Variables:**
 ```bash
-GEMINI_API_KEY=your_key_here
+AWS_ACCESS_KEY_ID=your_access_key
+AWS_SECRET_ACCESS_KEY=your_secret_key
+AWS_REGION=us-east-1
+BEDROCK_MODEL_ID=anthropic.claude-3-haiku-20240307-v1:0
+BEDROCK_EMBEDDING_MODEL_ID=amazon.titan-embed-text-v1
 OPENWEATHER_API_KEY=your_key_here
 GOOGLE_TRANSLATE_API_KEY=your_key_here
 DATABASE_URL=sqlite:///kheti_pulse.db
@@ -1312,8 +1324,9 @@ DATABASE_URL=sqlite:///kheti_pulse.db
 
 | Risk | Impact | Probability | Mitigation |
 |------|--------|-------------|------------|
-| **External API downtime** (OpenWeather, Gemini) | High | Medium | Cache data, fallback to synthetic data, display "Last updated" timestamp |
+| **External API downtime** (OpenWeather, Bedrock) | High | Low | Cache data, fallback to synthetic data, display "Last updated" timestamp, use AWS multi-region |
 | **LLM hallucination** (incorrect agricultural advice) | High | Medium | RAG with citations, refusal logic, disclaimer, manual review of knowledge base |
+| **AWS costs exceed budget** | Medium | Medium | Set billing alerts, use Claude Haiku (cheapest), implement request caching, monitor usage |
 | **Poor multilingual quality** (translation errors) | Medium | Medium | Use Google Translate (reliable), manual review of UI strings, test with native speakers |
 | **Slow RAG responses** (>5s) | Medium | Low | Cache frequent queries, optimize FAISS index, use faster LLM (Gemini Flash) |
 | **Knowledge base gaps** (missing topics) | Medium | High | Curate 30-50 diverse documents, implement "I don't know" responses, collect user feedback |
@@ -1442,12 +1455,24 @@ DATABASE_URL=sqlite:///kheti_pulse.db
 - **Type safety:** Pydantic models for request/response validation
 - **Async support:** Handle concurrent API calls efficiently
 
-### Why Google Gemini?
-- **Free tier:** Generous limits for demo
-- **Multilingual:** Strong Hindi/Marathi support
-- **Fast:** Gemini 1.5 Flash optimized for speed
-- **Embeddings:** Same provider for LLM + embeddings (consistency)
-- **Reliable:** Google infrastructure
+### Why Amazon Bedrock?
+- **Cost-effective:** Claude 3 Haiku is optimized for speed and cost
+- **Multilingual:** Strong Hindi/Marathi support (Claude 3 family)
+- **Enterprise-grade:** AWS infrastructure, high reliability
+- **Security:** Built-in content filtering, compliance features
+- **Embeddings included:** Titan Embeddings in same platform
+- **No rate limits:** Pay-as-you-go, no free tier restrictions
+- **Responsible AI:** Built-in guardrails and safety features
+
+**Pricing (Approximate):**
+- Claude 3 Haiku: $0.25 per 1M input tokens, $1.25 per 1M output tokens
+- Titan Embeddings: $0.0001 per 1K tokens
+- Estimated demo cost: ~$5-10 for 1000 queries (very affordable)
+
+**Setup Requirements:**
+- AWS account with Bedrock access enabled
+- IAM user with Bedrock permissions
+- Model access request (Claude 3 Haiku, Titan Embeddings) - usually instant approval
 
 ### Why LlamaIndex?
 - **Simplicity:** Cleaner API than LangChain
@@ -1481,7 +1506,7 @@ DATABASE_URL=sqlite:///kheti_pulse.db
 ### Sequence Diagram: RAG Query Flow
 
 ```
-User          Mobile App       Backend API      LlamaIndex      FAISS       Gemini API
+User          Mobile App       Backend API      LlamaIndex      FAISS       Bedrock API
  |                |                 |                |             |             |
  |--speak query-->|                 |                |             |             |
  |                |--STT----------->|                |             |             |
@@ -1493,7 +1518,7 @@ User          Mobile App       Backend API      LlamaIndex      FAISS       Gemi
  |                |                 |<-English-------|             |             |
  |                |                 |                |             |             |
  |                |                 |--embed query-->|             |             |
- |                |                 |                |------------>|             |
+ |                |                 |                |--Titan----->|             |
  |                |                 |                |<-embedding--|             |
  |                |                 |                |             |             |
  |                |                 |--search------->|             |             |
@@ -1506,7 +1531,7 @@ User          Mobile App       Backend API      LlamaIndex      FAISS       Gemi
  |                |                 |                |             |             |
  |                |                 |--build prompt->|             |             |
  |                |                 |                |             |             |
- |                |                 |--generate answer------------>|             |
+ |                |                 |--generate answer (Claude)--->|             |
  |                |                 |                |             |------------>|
  |                |                 |                |             |<-response---|
  |                |                 |<-answer + citations----------|             |
