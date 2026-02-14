@@ -541,3 +541,1049 @@ if humidity > 85% and crop_stage == "flowering":
 - Each action card includes a "Why?" tooltip
 - Example: "Why avoid spraying? High winds cause pesticide drift, reducing effectiveness and harming nearby crops."
 
+
+---
+
+## Mandi Price Intelligence Design
+
+### Data Ingestion
+
+**Source:** AGMARKNET API (https://agmarknet.gov.in)
+
+**Endpoint:** `/PriceAndArrival/DateWisePriceAndArrivalReport`
+
+**Parameters:**
+- State: Maharashtra
+- District: Nagpur, Akola, Amravati, Yavatmal, Wardha
+- Commodity: Cotton, Soybean
+- Date: Today
+
+**Ingestion Schedule:** Daily at 11 AM IST (after mandi data updates)
+
+**Process:**
+1. Cron job triggers daily
+2. Fetch CSV from AGMARKNET
+3. Parse and validate data
+4. Insert into SQLite (upsert on date + mandi + crop)
+5. Retain 30 days of history (rolling window)
+
+**Fallback:** If API fails, use cached data + display "Last updated: [timestamp]"
+
+---
+
+### Storage Schema
+
+**Table: `mandi_prices`**
+
+```sql
+CREATE TABLE mandi_prices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date DATE NOT NULL,
+    mandi_name VARCHAR(100) NOT NULL,
+    district VARCHAR(50) NOT NULL,
+    crop_name VARCHAR(50) NOT NULL,
+    variety VARCHAR(50),
+    min_price DECIMAL(10,2),
+    max_price DECIMAL(10,2),
+    modal_price DECIMAL(10,2) NOT NULL,
+    arrival_quantity DECIMAL(10,2),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(date, mandi_name, crop_name, variety)
+);
+
+CREATE INDEX idx_date_crop ON mandi_prices(date, crop_name);
+CREATE INDEX idx_mandi ON mandi_prices(mandi_name);
+```
+
+
+---
+
+### Forecasting Approach
+
+**Method:** Simple 7-day moving average (no complex ML)
+
+**Why Simple:**
+- Agricultural prices are volatile and hard to predict
+- Complex models require more data and tuning
+- Moving average sufficient for "trend" indicator (up/down/stable)
+- Transparent and explainable
+
+**Calculation:**
+```python
+def calculate_trend(prices_last_7_days):
+    if len(prices_last_7_days) < 3:
+        return "insufficient_data"
+    
+    avg_first_3 = mean(prices_last_7_days[:3])
+    avg_last_3 = mean(prices_last_7_days[-3:])
+    
+    change_pct = ((avg_last_3 - avg_first_3) / avg_first_3) * 100
+    
+    if change_pct > 5:
+        return "rising"
+    elif change_pct < -5:
+        return "falling"
+    else:
+        return "stable"
+```
+
+**Display:**
+- Rising: ↑ Green arrow + "Prices rising (+8%)"
+- Falling: ↓ Red arrow + "Prices falling (-6%)"
+- Stable: → Gray arrow + "Prices stable"
+
+---
+
+### Best Mandi Scoring
+
+**Scoring Formula:**
+```
+Net Estimate = (Modal Price × Quantity) - Transport Cost
+
+Transport Cost = Distance (km) × ₹10/km × (Quantity in quintals / 100)
+```
+
+**Distance Calculation:**
+- Use static lookup table (district-to-mandi distances)
+- Example: Nagpur to Akola = 250 km
+
+**Ranking:**
+1. Calculate net estimate for all mandis
+2. Sort by net estimate (descending)
+3. Select top mandi
+4. Generate explanation
+
+**Explanation Template:**
+```
+"{Mandi Name} offers ₹{price}/quintal. After transport costs (₹{transport_cost}), 
+your net return is ₹{net_estimate} - the highest among nearby mandis."
+```
+
+
+---
+
+## APIs
+
+### Base URL
+```
+Production: https://kheti-pulse-api.railway.app
+Development: http://localhost:8000
+```
+
+### Authentication
+**MVP:** No authentication (public endpoints)  
+**Future:** API key or JWT for rate limiting
+
+---
+
+### Endpoint 1: Get Dashboard Data
+
+**Endpoint:** `GET /api/dashboard`
+
+**Query Parameters:**
+- `lat` (float, required): Latitude
+- `lon` (float, required): Longitude
+- `language` (string, optional): `hi` or `mr` (default: `hi`)
+
+**Request Example:**
+```http
+GET /api/dashboard?lat=21.1458&lon=79.0882&language=mr
+```
+
+**Response Example:**
+```json
+{
+  "date": "2026-02-14",
+  "location": "Nagpur, Maharashtra",
+  "weather": {
+    "temp": 28,
+    "condition": "Partly Cloudy",
+    "precipitation_prob": 20,
+    "humidity": 65,
+    "wind_speed": 12
+  },
+  "risk_alerts": [
+    {
+      "level": "medium",
+      "message": "उच्च आर्द्रता - बुरशीजन्य रोगांवर लक्ष ठेवा",
+      "message_en": "High humidity - monitor for fungal diseases"
+    }
+  ],
+  "action_cards": {
+    "do": [
+      "सकाळी लवकर सिंचन करा",
+      "जल निचरा तपासा"
+    ],
+    "dont": [
+      "मध्यान्हात शेतात काम करू नका",
+      "आज फवारणी टाळा"
+    ]
+  }
+}
+```
+
+
+---
+
+### Endpoint 2: Get Mandi Prices
+
+**Endpoint:** `GET /api/mandi/prices`
+
+**Query Parameters:**
+- `crop` (string, required): `cotton` or `soybean`
+- `district` (string, optional): Filter by district
+- `date` (string, optional): Date in YYYY-MM-DD format (default: today)
+
+**Request Example:**
+```http
+GET /api/mandi/prices?crop=cotton&district=Nagpur
+```
+
+**Response Example:**
+```json
+{
+  "crop": "cotton",
+  "date": "2026-02-14",
+  "prices": [
+    {
+      "mandi_name": "Akola",
+      "district": "Akola",
+      "modal_price": 6200,
+      "min_price": 6000,
+      "max_price": 6400,
+      "arrival_quantity": 1500,
+      "trend": "rising",
+      "trend_pct": 8.2
+    },
+    {
+      "mandi_name": "Nagpur",
+      "district": "Nagpur",
+      "modal_price": 6100,
+      "min_price": 5900,
+      "max_price": 6300,
+      "arrival_quantity": 2000,
+      "trend": "stable",
+      "trend_pct": 2.1
+    }
+  ]
+}
+```
+
+
+---
+
+### Endpoint 3: Get Best Mandi Recommendation
+
+**Endpoint:** `POST /api/mandi/recommend`
+
+**Request Body:**
+```json
+{
+  "crop": "cotton",
+  "quantity": 10,
+  "user_location": {
+    "lat": 21.1458,
+    "lon": 79.0882,
+    "district": "Nagpur"
+  },
+  "language": "hi"
+}
+```
+
+**Response Example:**
+```json
+{
+  "crop": "cotton",
+  "quantity": 10,
+  "recommendations": [
+    {
+      "rank": 1,
+      "mandi_name": "Akola",
+      "district": "Akola",
+      "modal_price": 6200,
+      "distance_km": 250,
+      "transport_cost": 2500,
+      "gross_revenue": 62000,
+      "net_estimate": 59500,
+      "explanation": "अकोला मंडी ₹6,200/क्विंटल देते. वाहतूक खर्च (₹2,500) वजा केल्यानंतर, तुमचा निव्वळ परतावा ₹59,500 आहे - जवळच्या मंड्यांमध्ये सर्वाधिक."
+    },
+    {
+      "rank": 2,
+      "mandi_name": "Nagpur",
+      "district": "Nagpur",
+      "modal_price": 6100,
+      "distance_km": 0,
+      "transport_cost": 0,
+      "gross_revenue": 61000,
+      "net_estimate": 61000,
+      "explanation": "नागपूर मंडी जवळ आहे (वाहतूक खर्च नाही), परंतु किंमत कमी आहे."
+    }
+  ],
+  "best_mandi": "Akola"
+}
+```
+
+
+---
+
+### Endpoint 4: Ask Assistant (RAG Query)
+
+**Endpoint:** `POST /api/assistant/query`
+
+**Request Body:**
+```json
+{
+  "query": "कपास में सफेद मक्खी का उपचार क्या है?",
+  "language": "hi",
+  "session_id": "optional-session-id"
+}
+```
+
+**Response Example (Success):**
+```json
+{
+  "query": "कपास में सफेद मक्खी का उपचार क्या है?",
+  "answer": "सफेद मक्खी के नियंत्रण के लिए निम्नलिखित उपाय करें:\n1. नीम आधारित कीटनाशक का छिड़काव करें (1500 ppm)\n2. पीले चिपचिपे ट्रैप लगाएं\n3. इमिडाक्लोप्रिड 17.8% SL @ 0.5 ml/लीटर का उपयोग करें\n4. प्राकृतिक शत्रुओं को संरक्षित करें",
+  "citations": [
+    {
+      "source": "IPM_Cotton_Guide.pdf",
+      "section": "Section 4.2: Whitefly Management",
+      "relevance_score": 0.89
+    },
+    {
+      "source": "Pest_Management_Handbook.pdf",
+      "section": "Chapter 3: Sucking Pests",
+      "relevance_score": 0.76
+    }
+  ],
+  "confidence": "high",
+  "language": "hi"
+}
+```
+
+**Response Example (Low Confidence / Refusal):**
+```json
+{
+  "query": "मुझे कौन सा बीमा लेना चाहिए?",
+  "answer": "मैं इस सवाल का जवाब आत्मविश्वास से नहीं दे सकता। कृपया कृषि विशेषज्ञ या बीमा सलाहकार से परामर्श करें।",
+  "citations": [],
+  "confidence": "low",
+  "refusal_reason": "out_of_scope",
+  "language": "hi"
+}
+```
+
+
+---
+
+## Data Storage
+
+### SQLite Database Schema
+
+**Database File:** `kheti_pulse.db`
+
+**Table 1: `mandi_prices`** (see Mandi Price Intelligence section above)
+
+**Table 2: `weather_cache`**
+
+```sql
+CREATE TABLE weather_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    location_key VARCHAR(100) NOT NULL,
+    lat DECIMAL(10,6),
+    lon DECIMAL(10,6),
+    forecast_date DATE NOT NULL,
+    temp DECIMAL(5,2),
+    condition VARCHAR(50),
+    precipitation_prob INTEGER,
+    humidity INTEGER,
+    wind_speed DECIMAL(5,2),
+    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(location_key, forecast_date)
+);
+
+CREATE INDEX idx_location_date ON weather_cache(location_key, forecast_date);
+```
+
+**Table 3: `query_logs`** (for analytics)
+
+```sql
+CREATE TABLE query_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    query_text TEXT NOT NULL,
+    language VARCHAR(10),
+    confidence VARCHAR(20),
+    refusal_reason VARCHAR(50),
+    response_time_ms INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_created_at ON query_logs(created_at);
+```
+
+
+---
+
+### File Storage
+
+**Knowledge Base Documents:**
+```
+/data/knowledge_base/
+  ├── cotton/
+  │   ├── IPM_Cotton_Guide.pdf
+  │   ├── Cotton_Cultivation_Practices.pdf
+  │   └── Bollworm_Management.pdf
+  ├── soybean/
+  │   ├── Soybean_Crop_Management.pdf
+  │   └── Pod_Borer_Control.pdf
+  ├── soil/
+  │   ├── Black_Cotton_Soil_Management.pdf
+  │   └── Soil_Health_Card.pdf
+  └── general/
+      ├── Water_Conservation.pdf
+      └── Post_Harvest_Handling.pdf
+```
+
+**FAISS Index:**
+```
+/data/vector_store/
+  ├── faiss_index.bin
+  └── metadata.json
+```
+
+**Mandi CSV Cache:**
+```
+/data/mandi_cache/
+  └── agmarknet_YYYY-MM-DD.csv
+```
+
+---
+
+## Observability
+
+### Logging
+
+**Framework:** Python `logging` module + structured logs (JSON)
+
+**Log Levels:**
+- **DEBUG:** Detailed flow (retrieval scores, prompt templates)
+- **INFO:** API requests, cache hits/misses
+- **WARNING:** Low confidence responses, API failures
+- **ERROR:** Exceptions, data validation errors
+
+**Log Format:**
+```json
+{
+  "timestamp": "2026-02-14T10:30:45Z",
+  "level": "INFO",
+  "service": "rag_assistant",
+  "message": "Query processed successfully",
+  "query": "कपास में सफेद मक्खी...",
+  "confidence": "high",
+  "response_time_ms": 1250
+}
+```
+
+**Log Storage:** Local files (rotated daily) + stdout (for cloud logging)
+
+
+---
+
+### Metrics
+
+**Key Metrics:**
+
+| Metric | Description | Target |
+|--------|-------------|--------|
+| **API Response Time** | P95 latency for all endpoints | <3s |
+| **RAG Query Time** | Time from query to answer | <5s |
+| **Cache Hit Rate** | % of requests served from cache | >70% |
+| **Refusal Rate** | % of queries refused (low confidence) | <20% |
+| **Error Rate** | % of requests resulting in 5xx errors | <1% |
+| **Daily Active Users** | Unique users per day | 50+ (demo) |
+
+**Monitoring Tool:** Simple in-memory counters (MVP), Prometheus (future)
+
+**Dashboard:** Basic Flask admin page showing metrics
+
+---
+
+## Security & Privacy
+
+### No Personal Data Collection
+
+**Principle:** Zero PII storage
+
+**Implementation:**
+- No user accounts or authentication
+- No storage of user names, phone numbers, locations (beyond district-level)
+- Query logs anonymized (no user identifiers)
+- No tracking cookies or device fingerprinting
+
+**Compliance:** GDPR-friendly by design (no personal data = no compliance burden)
+
+---
+
+### Safe Data Handling
+
+**API Keys:** Store in environment variables (`.env` file, not in code)
+
+**HTTPS Only:** All API communication over TLS
+
+**Input Validation:**
+- Sanitize user queries (remove SQL injection attempts, XSS)
+- Validate lat/lon ranges, crop names (whitelist)
+- Rate limiting: 100 requests/hour per IP (simple in-memory counter)
+
+**Knowledge Base Security:**
+- Only curated, public documents
+- No user-uploaded content
+- Regular review for harmful content
+
+
+---
+
+## Responsible AI Guardrails
+
+### 1. Refusal Logic
+
+**Trigger Conditions:**
+
+| Condition | Action | Response Template |
+|-----------|--------|-------------------|
+| Retrieval score < 0.6 | Refuse | "मैं इस सवाल का जवाब आत्मविश्वास से नहीं दे सकता। कृपया कृषि विशेषज्ञ से परामर्श करें।" |
+| Medical question detected | Refuse | "मैं चिकित्सा सलाह नहीं दे सकता। कृपया डॉक्टर से संपर्क करें।" |
+| Legal question detected | Refuse | "मैं कानूनी सलाह नहीं दे सकता। कृपया वकील से परामर्श करें।" |
+| Financial advice requested | Refuse | "मैं वित्तीय सलाह नहीं दे सकता। कृपया वित्तीय सलाहकार से संपर्क करें।" |
+| Harmful content detected | Refuse | "मैं इस प्रकार के प्रश्नों का उत्तर नहीं दे सकता।" |
+
+**Detection Method:**
+- Keyword matching (simple regex for MVP)
+- LLM-based classification (future)
+
+---
+
+### 2. Low-Confidence Behavior
+
+**When confidence is medium (score 0.6-0.75):**
+- Provide answer with disclaimer: "यह जानकारी सीमित स्रोतों पर आधारित है। कृपया स्थानीय विशेषज्ञ से सत्यापित करें।"
+- Show fewer citations (only top 1)
+
+**When confidence is low (score < 0.6):**
+- Refuse to answer
+- Suggest alternative: "क्या आप अपना प्रश्न अधिक विशिष्ट तरीके से पूछ सकते हैं?"
+
+---
+
+### 3. Citation Requirement
+
+**Rule:** Every answer must include at least one citation
+
+**Enforcement:**
+- Post-processing check: If no citations in LLM response, append retrieved doc names
+- Display citations prominently in UI (not hidden in footnotes)
+
+**Example Display:**
+```
+Answer: [LLM response]
+
+📚 Sources:
+• IPM Cotton Guide, Section 4.2
+• Pest Management Handbook, Chapter 3
+```
+
+
+---
+
+### 4. Disclaimer Display
+
+**First Launch Disclaimer:**
+```
+⚠️ महत्वपूर्ण सूचना
+
+यह ऐप केवल निर्णय-समर्थन जानकारी प्रदान करता है। 
+यह पेशेवर कृषि सलाह का विकल्प नहीं है।
+
+महत्वपूर्ण निर्णयों को हमेशा स्थानीय विशेषज्ञों से सत्यापित करें।
+
+[समझ गया] [और जानें]
+```
+
+**Persistent Disclaimer:** Small text in assistant interface footer
+
+---
+
+## Performance & Caching Strategy
+
+### Caching Layers
+
+**1. Weather Data Cache**
+- **TTL:** 6 hours
+- **Storage:** SQLite + in-memory (Redis for production)
+- **Key:** `weather:{lat}:{lon}:{date}`
+- **Invalidation:** Time-based (6 hours)
+
+**2. Mandi Price Cache**
+- **TTL:** 24 hours (refreshed daily at 11 AM)
+- **Storage:** SQLite
+- **Key:** `mandi:{crop}:{date}`
+- **Invalidation:** Daily refresh
+
+**3. RAG Retrieval Cache**
+- **TTL:** 1 hour
+- **Storage:** In-memory (LRU cache, max 1000 entries)
+- **Key:** `rag:{query_hash}`
+- **Invalidation:** Time-based (1 hour) or knowledge base update
+
+**4. Mobile App Cache**
+- **Storage:** SharedPreferences (small data), SQLite (structured data)
+- **Cached Data:** Last dashboard response, mandi prices, chat history
+- **Invalidation:** Manual refresh or 6-hour timeout
+
+
+---
+
+### Performance Targets
+
+| Component | Target | Strategy |
+|-----------|--------|----------|
+| **Dashboard Load** | <3s | Cache weather, precompute action cards |
+| **Mandi Price List** | <2s | SQLite query + in-memory cache |
+| **RAG Query** | <5s | Parallel retrieval + LLM call, cache frequent queries |
+| **Mobile App Launch** | <2s | Lazy load non-critical components |
+| **APK Size** | <50 MB | Exclude unused dependencies, compress assets |
+
+**Optimization Techniques:**
+- Async API calls (FastAPI async endpoints)
+- Connection pooling for external APIs
+- Batch embedding generation (if adding multiple docs)
+- Lazy loading of FAISS index (load on first query)
+
+---
+
+## Deployment Plan
+
+### Local Development
+
+**Backend:**
+```bash
+# Setup
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Run
+uvicorn main:app --reload --port 8000
+```
+
+**Mobile:**
+```bash
+# Setup
+flutter pub get
+
+# Run on emulator/device
+flutter run
+```
+
+**Environment Variables:**
+```bash
+GEMINI_API_KEY=your_key_here
+OPENWEATHER_API_KEY=your_key_here
+GOOGLE_TRANSLATE_API_KEY=your_key_here
+DATABASE_URL=sqlite:///kheti_pulse.db
+```
+
+
+---
+
+### Cloud Deployment
+
+**Backend Hosting:** Railway or Render (free tier)
+
+**Deployment Steps:**
+1. Push code to GitHub
+2. Connect Railway to GitHub repo
+3. Set environment variables in Railway dashboard
+4. Deploy (automatic on git push)
+5. Note deployed URL (e.g., `https://kheti-pulse-api.railway.app`)
+
+**Database:** SQLite file persisted in Railway volume
+
+**Static Files:** Knowledge base PDFs + FAISS index bundled with deployment
+
+**Why Railway:**
+- Free tier: 500 hours/month (sufficient for demo)
+- Simple deployment (no Docker knowledge needed)
+- Automatic HTTPS
+- Good for Python apps
+
+**Alternative:** Render (similar features, slightly different pricing)
+
+---
+
+### Mobile App Distribution
+
+**Demo Distribution:**
+- Build APK: `flutter build apk --release`
+- Share via Google Drive, Dropbox, or direct download link
+- No Play Store submission (not needed for hackathon)
+
+**Installation:**
+- Enable "Install from Unknown Sources" on Android
+- Download APK
+- Install
+
+**Future:** Publish to Google Play Store (requires developer account, ₹2000 one-time fee)
+
+
+---
+
+## Testing Strategy
+
+### Backend Testing
+
+**Unit Tests:**
+- Weather risk rule logic
+- Mandi price calculations (net estimate, transport cost)
+- RAG retrieval (mock FAISS responses)
+- Translation functions
+
+**Integration Tests:**
+- End-to-end API tests (mock external APIs)
+- Database operations (SQLite CRUD)
+- LlamaIndex query pipeline
+
+**Tools:** pytest, pytest-asyncio
+
+**Coverage Target:** >70% for core logic
+
+---
+
+### Mobile Testing
+
+**Manual Testing:**
+- UI flow testing (home → sell smart → assistant)
+- Language switching
+- Voice input (on real device)
+- Offline behavior (airplane mode)
+
+**Widget Tests:**
+- Dashboard card rendering
+- Price list display
+- Chat message bubbles
+
+**Tools:** Flutter test framework
+
+**Devices:** Test on 2-3 Android devices (different screen sizes)
+
+---
+
+### End-to-End Testing
+
+**Demo Scenarios:**
+1. **Morning Check:** Open app → see weather alert → view action cards
+2. **Price Discovery:** Navigate to Sell Smart → select Cotton → see prices → get recommendation
+3. **Ask Question:** Open assistant → ask "कपास में सफेद मक्खी का उपचार?" → receive answer with citations
+4. **Voice Input:** Tap mic → speak in Marathi → see transcription → get answer
+5. **Offline Resilience:** Turn off internet → see cached data → turn on → data refreshes
+
+
+---
+
+### Load Testing
+
+**Tool:** Locust (Python load testing)
+
+**Scenario:** 100 concurrent users making API requests
+
+**Endpoints to Test:**
+- `/api/dashboard` (most frequent)
+- `/api/mandi/prices`
+- `/api/assistant/query` (most expensive)
+
+**Success Criteria:**
+- P95 latency < 5s
+- Error rate < 1%
+- No crashes
+
+---
+
+## Risks & Mitigations
+
+| Risk | Impact | Probability | Mitigation |
+|------|--------|-------------|------------|
+| **External API downtime** (OpenWeather, Gemini) | High | Medium | Cache data, fallback to synthetic data, display "Last updated" timestamp |
+| **LLM hallucination** (incorrect agricultural advice) | High | Medium | RAG with citations, refusal logic, disclaimer, manual review of knowledge base |
+| **Poor multilingual quality** (translation errors) | Medium | Medium | Use Google Translate (reliable), manual review of UI strings, test with native speakers |
+| **Slow RAG responses** (>5s) | Medium | Low | Cache frequent queries, optimize FAISS index, use faster LLM (Gemini Flash) |
+| **Knowledge base gaps** (missing topics) | Medium | High | Curate 30-50 diverse documents, implement "I don't know" responses, collect user feedback |
+| **Mandi data unavailable** (AGMARKNET API fails) | Medium | Medium | Cache 30 days of data, fallback to synthetic data, display staleness warning |
+| **Voice recognition errors** (STT inaccuracy) | Low | Medium | Allow text editing after STT, support text input as primary method |
+| **Demo day technical issues** (internet, device) | High | Low | Pre-load all data, test on multiple devices, have backup device, record demo video |
+| **Scope creep** (too many features) | High | High | Strict MVP definition, prioritize P0 features only, defer stretch goals |
+| **Team bandwidth** (7-day timeline) | High | Medium | Daily standups, clear task assignments, cut features if needed |
+
+
+---
+
+## Future Enhancements
+
+### Phase 2 (Post-Hackathon)
+
+1. **User Accounts & Personalization**
+   - Save crop preferences, location
+   - Personalized action cards based on crop calendar
+   - Chat history persistence
+
+2. **Push Notifications**
+   - Weather alerts (heavy rain, heatwave)
+   - Price spike notifications
+   - Government scheme deadlines
+
+3. **Crop Calendar**
+   - Stage-based recommendations (sowing, flowering, harvest)
+   - Automated reminders for key activities
+
+4. **Government Schemes Explorer**
+   - Searchable database of schemes
+   - Eligibility checker
+   - Document upload for applications
+
+5. **Community Features**
+   - Farmer forums (moderated)
+   - Success stories
+   - Expert Q&A sessions
+
+---
+
+### Phase 3 (Scale)
+
+1. **Expanded Geography**
+   - All Indian states
+   - Localized content for each region
+
+2. **More Crops**
+   - Wheat, rice, sugarcane, vegetables
+   - Livestock and fisheries
+
+3. **Advanced Analytics**
+   - Predictive price modeling (ML-based)
+   - Yield forecasting
+   - Pest outbreak predictions
+
+4. **IoT Integration**
+   - Soil moisture sensors
+   - Weather stations
+   - Automated irrigation triggers
+
+5. **Marketplace**
+   - Direct buyer-seller connections
+   - Quality certification
+   - Logistics support
+
+
+---
+
+## Design Constraints
+
+### Hard Constraints
+
+1. **Public/Synthetic Data Only**
+   - No proprietary datasets
+   - No user-generated content (for MVP)
+   - All knowledge base documents must be publicly available or synthetic
+
+2. **7-Day Timeline**
+   - MVP must be demo-ready in 7 days
+   - No time for complex ML model training
+   - Focus on integration over innovation
+
+3. **Simple, Robust Components**
+   - Prefer proven libraries over custom implementations
+   - No experimental technologies
+   - Prioritize reliability over cutting-edge features
+
+4. **Multilingual Support (Marathi + Hindi)**
+   - All features must work in both languages
+   - UI strings externalized
+   - LLM must support both languages
+
+5. **Free Tier APIs Only**
+   - No paid services (budget constraint)
+   - Use free tiers: Gemini, OpenWeather, Google Translate
+   - Self-hosted components where possible (FAISS, SQLite)
+
+---
+
+### Soft Constraints
+
+1. **Android Focus** (iOS future)
+2. **Maharashtra/Vidarbha Region** (expand later)
+3. **Cotton & Soybean Only** (add crops later)
+4. **No User Authentication** (add in Phase 2)
+5. **Basic UI** (Material Design, no custom illustrations)
+
+
+---
+
+## Technology Choices - Rationale
+
+### Why Flutter?
+- **Cross-platform:** Android now, iOS later with same codebase
+- **Rich UI:** Material Design widgets, charts, animations
+- **Offline support:** Good local storage options (SharedPreferences, SQLite)
+- **Fast development:** Hot reload, large package ecosystem
+- **Team familiarity:** Assuming team has Flutter experience
+
+### Why FastAPI?
+- **Speed:** Fast development, fast runtime (async)
+- **Python ecosystem:** Easy integration with ML libraries (LlamaIndex, FAISS)
+- **Auto docs:** OpenAPI/Swagger UI out of the box
+- **Type safety:** Pydantic models for request/response validation
+- **Async support:** Handle concurrent API calls efficiently
+
+### Why Google Gemini?
+- **Free tier:** Generous limits for demo
+- **Multilingual:** Strong Hindi/Marathi support
+- **Fast:** Gemini 1.5 Flash optimized for speed
+- **Embeddings:** Same provider for LLM + embeddings (consistency)
+- **Reliable:** Google infrastructure
+
+### Why LlamaIndex?
+- **Simplicity:** Cleaner API than LangChain
+- **FAISS integration:** Built-in support
+- **Good docs:** Easy to get started
+- **Flexibility:** Easy to customize retrieval pipeline
+
+### Why FAISS?
+- **Local:** No external dependencies, no cost
+- **Fast:** Optimized for similarity search
+- **Sufficient:** Handles <1000 documents easily
+- **No setup:** Just load index file and query
+
+### Why SQLite?
+- **Simple:** No server setup, just a file
+- **Sufficient:** Handles <10K rows easily
+- **Portable:** Easy to backup, migrate
+- **No cost:** Built into Python
+
+### Why OpenWeatherMap?
+- **Free tier:** 1000 calls/day (sufficient for demo)
+- **Reliable:** Industry standard
+- **Good coverage:** India well-supported
+- **Simple API:** Easy integration
+
+
+---
+
+## Appendix: ASCII Diagrams
+
+### Sequence Diagram: RAG Query Flow
+
+```
+User          Mobile App       Backend API      LlamaIndex      FAISS       Gemini API
+ |                |                 |                |             |             |
+ |--speak query-->|                 |                |             |             |
+ |                |--STT----------->|                |             |             |
+ |                |<-text-----------|                |             |             |
+ |                |                 |                |             |             |
+ |                |--POST /query--->|                |             |             |
+ |                |                 |                |             |             |
+ |                |                 |--translate---->|             |             |
+ |                |                 |<-English-------|             |             |
+ |                |                 |                |             |             |
+ |                |                 |--embed query-->|             |             |
+ |                |                 |                |------------>|             |
+ |                |                 |                |<-embedding--|             |
+ |                |                 |                |             |             |
+ |                |                 |--search------->|             |             |
+ |                |                 |                |--query----->|             |
+ |                |                 |                |<-top-3------|             |
+ |                |                 |<-docs----------|             |             |
+ |                |                 |                |             |             |
+ |                |                 |--check confidence            |             |
+ |                |                 |  (score >= 0.6?)             |             |
+ |                |                 |                |             |             |
+ |                |                 |--build prompt->|             |             |
+ |                |                 |                |             |             |
+ |                |                 |--generate answer------------>|             |
+ |                |                 |                |             |------------>|
+ |                |                 |                |             |<-response---|
+ |                |                 |<-answer + citations----------|             |
+ |                |                 |                |             |             |
+ |                |<-JSON response--|                |             |             |
+ |                |                 |                |             |             |
+ |<-display-------|                 |                |             |             |
+ |                |                 |                |             |             |
+```
+
+
+---
+
+### Data Flow Diagram: Mandi Price Intelligence
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    AGMARKNET API (Daily)                        │
+│                  (Government Mandi Data Source)                 │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             │ CSV Download (11 AM IST)
+                             │
+                             ▼
+                    ┌────────────────┐
+                    │  Cron Job      │
+                    │  (Daily Sync)  │
+                    └────────┬───────┘
+                             │
+                             │ Parse & Validate
+                             │
+                             ▼
+                    ┌────────────────┐
+                    │  SQLite DB     │
+                    │  mandi_prices  │
+                    │  (30 days)     │
+                    └────────┬───────┘
+                             │
+                ┌────────────┼────────────┐
+                │            │            │
+                ▼            ▼            ▼
+         ┌──────────┐ ┌──────────┐ ┌──────────┐
+         │  Price   │ │  Trend   │ │  Best    │
+         │  List    │ │  Calc    │ │  Mandi   │
+         │  API     │ │  (7-day) │ │  Scorer  │
+         └────┬─────┘ └────┬─────┘ └────┬─────┘
+              │            │            │
+              └────────────┼────────────┘
+                           │
+                           ▼
+                  ┌────────────────┐
+                  │  FastAPI       │
+                  │  /mandi/*      │
+                  └────────┬───────┘
+                           │
+                           │ JSON Response
+                           │
+                           ▼
+                  ┌────────────────┐
+                  │  Mobile App    │
+                  │  Sell Smart    │
+                  └────────────────┘
+```
+
+---
+
+## Summary
+
+This design document outlines a pragmatic, demo-ready architecture for Kheti Pulse, a rural farmer copilot. Key design decisions prioritize simplicity, reliability, and responsible AI practices within a 7-day development timeline.
+
+The system leverages proven technologies (Flutter, FastAPI, Gemini, FAISS) and focuses on three core value propositions: weather risk alerts, mandi price intelligence, and conversational agricultural guidance. All features are multilingual (Marathi/Hindi) and designed with offline resilience.
+
+Responsible AI guardrails—including citations, refusals, and explainability—are baked into every layer, ensuring farmers receive trustworthy, transparent information. The architecture is designed to scale beyond the MVP while maintaining the core principle: empowering farmers with timely, actionable insights.
+
+---
+
+**Document Status:** Ready for Implementation  
+**Next Steps:** Backend scaffolding, knowledge base curation, mobile UI mockups  
+**Review Date:** 2026-02-15
+
